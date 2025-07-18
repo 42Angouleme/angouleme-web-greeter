@@ -3,6 +3,7 @@ import express from 'express';
 import { ExamForHost, Exam42 } from './interfaces';
 import ipRangeCheck from 'ip-range-check';
 import dns from 'dns';
+import { sanitizeHostname, sanitizeAndValidateIP, isValidHostname, sanitizeFilePath } from './validation';
 
 export const EXAM_MODE_ENABLED = process.env.EXAM_MODE_ENABLED === 'true' || false;
 
@@ -11,9 +12,24 @@ export const parseIpRanges = function(ipRanges: string): string[] {
 }
 
 export const ipToHostName = async function(ip: string): Promise<string | null> {
+	// Validate and sanitize IP address
+	const sanitizedIp = sanitizeAndValidateIP(ip);
+	if (!sanitizedIp) {
+		console.warn(`Invalid IP address provided to ipToHostName: ${ip}`);
+		return null;
+	}
+
 	try {
-		const result = await dns.promises.reverse(ip);
-		return result[0];
+		const result = await dns.promises.reverse(sanitizedIp);
+		const hostname = result[0];
+		
+		// Validate the returned hostname
+		if (!isValidHostname(hostname)) {
+			console.warn(`DNS reverse lookup returned invalid hostname: ${hostname}`);
+			return null;
+		}
+		
+		return hostname;
 	} catch (err) {
 		console.error(err);
 		return null;
@@ -21,9 +37,24 @@ export const ipToHostName = async function(ip: string): Promise<string | null> {
 };
 
 export const hostNameToIp = async function(hostName: string): Promise<string | null> {
+	// Validate and sanitize hostname
+	const sanitizedHostname = sanitizeHostname(hostName);
+	if (!sanitizedHostname || sanitizedHostname === 'unknown') {
+		console.warn(`Invalid hostname provided to hostNameToIp: ${hostName}`);
+		return null;
+	}
+
 	try {
-		const result = await dns.promises.lookup(hostName);
-		return result.address;
+		const result = await dns.promises.lookup(sanitizedHostname);
+		
+		// Validate the returned IP address
+		const sanitizedIp = sanitizeAndValidateIP(result.address);
+		if (!sanitizedIp) {
+			console.warn(`DNS lookup returned invalid IP: ${result.address}`);
+			return null;
+		}
+		
+		return sanitizedIp;
 	}
 	catch (err) {
 		console.error(err);
@@ -44,17 +75,32 @@ export const getIpFromRequest = function(req: express.Request): string | null {
 	else if ('remoteAddress' in req.socket) {
 		ip = req.socket.remoteAddress;
 	}
-	return ip ?? null;
+	
+	// Validate and sanitize the IP address before returning
+	if (ip) {
+		const sanitizedIp = sanitizeAndValidateIP(ip.trim());
+		return sanitizedIp;
+	}
+	
+	return null;
 }
 
 export const getHostNameFromRequest = async function(req: express.Request): Promise<string> {
 	let hostname = req.params.hostname ?? 'unknown';
 
-	// If hostname is not defined, parse it from the IP address
+	// Validate and sanitize hostname parameter
+	if (hostname !== 'unknown') {
+		hostname = sanitizeHostname(hostname);
+	}
+
+	// If hostname is not defined or invalid, parse it from the IP address
 	if (hostname === 'unknown') {
 		const ip = getIpFromRequest(req);
 		if (ip) {
-			hostname = await ipToHostName(ip) ?? hostname;
+			const resolvedHostname = await ipToHostName(ip);
+			if (resolvedHostname) {
+				hostname = resolvedHostname;
+			}
 		}
 	}
 
@@ -85,48 +131,95 @@ export const getCurrentExams = function(exams: Exam42[]): Exam42[] {
 };
 
 export const getExamForHostName = async function(exams: Exam42[], hostName: string): Promise<ExamForHost[]> {
-	if (hostName === 'unknown') {
-		console.warn('Hostname is unknown, unable to find exams for host');
+	// Validate hostname input
+	const sanitizedHostname = sanitizeHostname(hostName);
+	if (sanitizedHostname === 'unknown') {
+		console.warn('Hostname is unknown or invalid, unable to find exams for host');
 		return [];
 	}
-	const hostIp = await hostNameToIp(hostName);
+	
+	const hostIp = await hostNameToIp(sanitizedHostname);
 	if (!hostIp) {
-		console.warn(`Could not parse IP address from hostname "${hostName}", unable to find exams for host`);
+		console.warn(`Could not parse IP address from hostname "${sanitizedHostname}", unable to find exams for host`);
 		return [];
 	}
+	
 	return getExamForHost(exams, hostIp);
 };
 
 export const getMessageForHostName = async function(hostName: string): Promise<string> {
-	if (hostName === 'unknown') {
-		console.warn('Hostname is unknown, unable to find messages for host');
+	// Validate hostname input
+	const sanitizedHostname = sanitizeHostname(hostName);
+	if (sanitizedHostname === 'unknown') {
+		console.warn('Hostname is unknown or invalid, unable to find messages for host');
 		return "";
 	}
-	const hostIp = await hostNameToIp(hostName);
+	
+	const hostIp = await hostNameToIp(sanitizedHostname);
 	if (!hostIp) {
-		console.warn(`Could not parse IP address from hostname "${hostName}", unable to find messages for host`);
+		console.warn(`Could not parse IP address from hostname "${sanitizedHostname}", unable to find messages for host`);
 		return "";
 	}
 
 	try {
-		// Read messages.json
+		// Validate file path to prevent path traversal
+		const messagesFilePath = 'messages.json';
+		const sanitizedFilePath = sanitizeFilePath(messagesFilePath);
+		if (!sanitizedFilePath || sanitizedFilePath !== 'messages.json') {
+			console.warn('Invalid file path for messages.json');
+			return "";
+		}
+
+		// Read messages.json with proper error handling
 		// TODO: implement caching for messages
-		const messagesJson = JSON.parse(fs.readFileSync('messages.json', 'utf8'));
-		if (!messagesJson) {
-			console.warn('Could not parse messages.json, unable to find messages for host');
+		let messagesContent: string;
+		try {
+			messagesContent = fs.readFileSync(sanitizedFilePath, 'utf8');
+		} catch (fileError) {
+			console.warn('Could not read messages.json file:', fileError);
+			return "";
+		}
+
+		let messagesJson: Record<string, unknown>;
+		try {
+			messagesJson = JSON.parse(messagesContent);
+		} catch (parseError) {
+			console.warn('Could not parse messages.json, invalid JSON format:', parseError);
+			return "";
+		}
+
+		if (!messagesJson || typeof messagesJson !== 'object') {
+			console.warn('messages.json does not contain valid object data');
 			return "";
 		}
 	
-		// Find messages for host
-		// Any message with a key that the hostname starts with will be returned
-		const hostMessages = Object.entries(messagesJson)
-			.filter(([key]) => hostName.startsWith(key))
-			.map(([, message]) => message);
+		// Find messages for host with proper validation
+		const hostMessages: string[] = [];
+		for (const [key, message] of Object.entries(messagesJson)) {
+			// Validate key and message
+			if (typeof key !== 'string' || typeof message !== 'string') {
+				console.warn(`Invalid message entry: key="${key}", message type="${typeof message}"`);
+				continue;
+			}
+
+			// Sanitize the key to prevent injection
+			const sanitizedKey = sanitizeHostname(key);
+			if (sanitizedKey && sanitizedHostname.startsWith(sanitizedKey)) {
+				// Sanitize message content but allow newlines and basic formatting
+				const sanitizedMessage = message
+					.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control chars except \n and \t
+					.substring(0, 1000); // Limit message length
+				
+				if (sanitizedMessage.trim()) {
+					hostMessages.push(sanitizedMessage);
+				}
+			}
+		}
 	
 		// Combine all messages into one
 		return hostMessages.join('\n\n');
 	} catch (error) {
-		console.error(error);
+		console.error('Error in getMessageForHostName:', error);
 		return "";
 	}
 }

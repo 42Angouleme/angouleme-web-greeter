@@ -42,6 +42,10 @@ export class Authenticator {
 	public static readonly MAX_LEN_USERNAME = 32;
 	public static readonly MAX_LEN_PASSWORD = 128;
 
+	// Validation patterns
+	private static readonly USERNAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
+	private static readonly FORBIDDEN_CHARS = /[\x00-\x1F\x7F]/g; // Control characters
+
 	public constructor() {
 		// Initialize LightDM event listeners
 		this._initLightDMListeners();
@@ -165,6 +169,48 @@ export class Authenticator {
 		this._authEvents = authEvents;
 	}
 
+	/**
+	 * Validate and sanitize username input
+	 * @param username The username to validate
+	 * @returns Sanitized username or empty string if invalid
+	 */
+	private _validateUsername(username: string): string {
+		if (!username || typeof username !== 'string') {
+			return '';
+		}
+
+		// Remove control characters and limit length
+		let sanitized = username.replace(Authenticator.FORBIDDEN_CHARS, '').trim();
+		sanitized = sanitized.substring(0, Authenticator.MAX_LEN_USERNAME);
+
+		// Check against pattern (alphanumeric, dots, underscores, hyphens)
+		if (!Authenticator.USERNAME_PATTERN.test(sanitized)) {
+			console.warn('Username contains invalid characters');
+			return '';
+		}
+
+		return sanitized;
+	}
+
+	/**
+	 * Validate and sanitize password input
+	 * @param password The password to validate
+	 * @returns Sanitized password or empty string if invalid
+	 */
+	private _validatePassword(password: string): string {
+		if (!password || typeof password !== 'string') {
+			return '';
+		}
+
+		// Remove null bytes and other dangerous control characters but keep some like tabs
+		let sanitized = password.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+		
+		// Limit length but don't trim password as it could contain leading/trailing spaces
+		sanitized = sanitized.substring(0, Authenticator.MAX_LEN_PASSWORD);
+
+		return sanitized;
+	}
+
 	private _clearAuth(): void {
 		this._username = "";
 		this._password = "";
@@ -199,16 +245,31 @@ export class Authenticator {
 	 * @returns void
 	 */
 	public login(username: string, password: string): void {
-		this._username = username.substring(0, Authenticator.MAX_LEN_USERNAME).trim();
-		this._password = password.substring(0, Authenticator.MAX_LEN_PASSWORD); // do not trim password as it could contain spaces at the beginning or end
+		// Validate and sanitize inputs
+		const validatedUsername = this._validateUsername(username);
+		const validatedPassword = this._validatePassword(password);
 
-		if (this._authenticating || this._authenticated) {
-			console.warn("Login() was called while already authenticating or authenticated. Stopping authentication.");
+		if (!validatedUsername) {
+			console.warn("Login() called with invalid username");
+			if (this._authEvents) {
+				this._authEvents.errorMessage("Invalid username format");
+			}
 			return;
 		}
 
-		if (this._username === "" || this._password === "") {
-			console.log("Login() was called while username or password is empty. Stopping authentication.");
+		if (!validatedPassword) {
+			console.warn("Login() called with invalid password");
+			if (this._authEvents) {
+				this._authEvents.errorMessage("Invalid password format");
+			}
+			return;
+		}
+
+		this._username = validatedUsername;
+		this._password = validatedPassword;
+
+		if (this._authenticating || this._authenticated) {
+			console.warn("Login() was called while already authenticating or authenticated. Stopping authentication.");
 			return;
 		}
 

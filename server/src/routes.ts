@@ -2,6 +2,7 @@ import { Express } from 'express';
 import { Config, ConfigError, Event42, Exam42 } from './interfaces';
 import { getCurrentExams, getExamForHostName, getHostNameFromRequest, hostNameToIp, examAvailableForHost, getMessageForHostName } from './utils';
 import { fetchEvents, fetchExams, fetchUserImage } from './intra';
+import { validateHostnameParam, validateUsernameParam, ValidationError, sanitizeHostname, sanitizeAndValidateIP } from './validation';
 
 // Intra API
 import Fast42 from '@codam/fast42';
@@ -15,6 +16,26 @@ const cache = new NodeCache({ stdTTL: cacheTTL });
 const FOUND_HOSTS: string[] = [];
 
 export default (app: Express) => {
+	// Input validation middleware
+	app.use((req, res, next) => {
+		try {
+			// Validate and sanitize common headers
+			if (req.headers['x-forwarded-for']) {
+				if (typeof req.headers['x-forwarded-for'] === 'string') {
+					const ips = req.headers['x-forwarded-for'].split(',');
+					req.headers['x-forwarded-for'] = ips.map(ip => {
+						const sanitized = sanitizeAndValidateIP(ip.trim());
+						return sanitized || '0.0.0.0';
+					}).join(',');
+				}
+			}
+			next();
+		} catch (error) {
+			console.error('Error in validation middleware:', error);
+			res.status(400).send({ error: 'Invalid request format' });
+		}
+	});
+
 	// Initialize
 	setUpIntraAPI();
 
@@ -24,109 +45,141 @@ export default (app: Express) => {
 	});
 
 	app.get('/api/config/:hostname?', async (req, res) => {
-		const hostname = await getHostNameFromRequest(req);
+		try {
+			const hostname = await getHostNameFromRequest(req);
 
-		let events = cache.get<Event42[]>('events');
-		let exams = cache.get<Exam42[]>('exams');
-		let lastCacheChange = cache.get<Date>('last-cache-change');
+			let events = cache.get<Event42[]>('events');
+			let exams = cache.get<Exam42[]>('exams');
+			let lastCacheChange = cache.get<Date>('last-cache-change');
 
-		if (!events && api) {
-			events = await fetchEvents(api);
-			cache.set('events', events);
-			cache.set('last-cache-change', new Date());
+			if (!events && api) {
+				events = await fetchEvents(api);
+				cache.set('events', events);
+				cache.set('last-cache-change', new Date());
+			}
+			if (!exams && api) {
+				exams = await fetchExams(api);
+				cache.set('exams', exams);
+				cache.set('last-cache-change', new Date());
+			}
+
+			if (events === undefined || exams === undefined) {
+				console.log('No data to return for config request');
+				const cError: ConfigError = { error: 'No data to return, try again later' };
+				return res.status(503).send(cError);
+			}
+
+			if (FOUND_HOSTS.includes(hostname) === false) {
+				console.log(`Found new hostname: ${hostname}`);
+				FOUND_HOSTS.push(hostname);
+			}
+
+			const config: Config = {
+				hostname: hostname,
+				events: events,
+				exams: exams,
+				exams_for_host: await getExamForHostName(exams, hostname),
+				fetch_time: lastCacheChange ?? new Date(),
+				message: await getMessageForHostName(hostname),
+			};
+			res.send(config);
+		} catch (error) {
+			console.error('Error in /api/config route:', error);
+			if (error instanceof ValidationError) {
+				return res.status(400).send({ error: error.message });
+			}
+			return res.status(500).send({ error: 'Internal server error' });
 		}
-		if (!exams && api) {
-			exams = await fetchExams(api);
-			cache.set('exams', exams);
-			cache.set('last-cache-change', new Date());
-		}
-
-		if (events === undefined || exams === undefined) {
-			console.log('No data to return for config request');
-			const cError: ConfigError = { error: 'No data to return, try again later' };
-			return res.status(503).send(cError);
-		}
-
-		if (FOUND_HOSTS.includes(hostname) === false) {
-			console.log(`Found new hostname: ${hostname}`);
-			FOUND_HOSTS.push(hostname);
-		}
-
-		const config: Config = {
-			hostname: hostname,
-			events: events,
-			exams: exams,
-			exams_for_host: await getExamForHostName(exams, hostname),
-			fetch_time: lastCacheChange ?? new Date(),
-			message: await getMessageForHostName(hostname),
-		};
-		res.send(config);
 	});
 
 	app.get('/api/exam_mode_hosts', async (req, res) => {
-		// Check cache first
-		if (cache.has('examModeHosts')) {
-			const ret = cache.get<any>('examModeHosts')
-			return res.send(ret);
-		}
-
-		// Get the current exams
-		let exams = cache.get<Exam42[]>('exams');
-		if (!exams && api) {
-			exams = await fetchExams(api);
-			cache.set('exams', exams);
-			cache.set('last-cache-change', new Date());
-		}
-		if (exams === undefined) {
-			return res.status(503).send({ error: 'No data to return, try again later', status: 'error' });
-		}
-		const currentExams = getCurrentExams(exams);
-		if (currentExams.length === 0) {
-			return res.send({ exam_mode_hosts: [], message: 'No exams are currently running', status: 'ok' });
-		}
-
-		// Calculate which hosts are in exam mode
-		const examModeHosts: string[] = [];
-		for (const hostname of FOUND_HOSTS) {
-			const ipAddress = await hostNameToIp(hostname);
-			if (!ipAddress) {
-				continue;
+		try {
+			// Check cache first
+			if (cache.has('examModeHosts')) {
+				const ret = cache.get<any>('examModeHosts')
+				return res.send(ret);
 			}
-			for (const exam of currentExams) {
-				if (examAvailableForHost(exam, ipAddress)) {
-					examModeHosts.push(hostname);
-					break;
+
+			// Get the current exams
+			let exams = cache.get<Exam42[]>('exams');
+			if (!exams && api) {
+				exams = await fetchExams(api);
+				cache.set('exams', exams);
+				cache.set('last-cache-change', new Date());
+			}
+			if (exams === undefined) {
+				return res.status(503).send({ error: 'No data to return, try again later', status: 'error' });
+			}
+			const currentExams = getCurrentExams(exams);
+			if (currentExams.length === 0) {
+				return res.send({ exam_mode_hosts: [], message: 'No exams are currently running', status: 'ok' });
+			}
+
+			// Calculate which hosts are in exam mode
+			const examModeHosts: string[] = [];
+			for (const hostname of FOUND_HOSTS) {
+				// Validate hostname before processing
+				const sanitizedHostname = sanitizeHostname(hostname);
+				if (sanitizedHostname === 'unknown') {
+					console.warn(`Skipping invalid hostname in FOUND_HOSTS: ${hostname}`);
+					continue;
+				}
+
+				const ipAddress = await hostNameToIp(sanitizedHostname);
+				if (!ipAddress) {
+					continue;
+				}
+				for (const exam of currentExams) {
+					if (examAvailableForHost(exam, ipAddress)) {
+						examModeHosts.push(sanitizedHostname);
+						break;
+					}
 				}
 			}
-		}
 
-		// Save to cache and return data
-		const examsInProgressIds = currentExams.map((exam) => exam.id);
-		const ret = { exam_mode_hosts: examModeHosts, message: `Exams in progress: ${examsInProgressIds.join(', ')}`, status: 'ok' }
-		cache.set('examModeHosts', ret, 5); // 5 second cache
-		return res.send(ret);
+			// Save to cache and return data
+			const examsInProgressIds = currentExams.map((exam) => exam.id);
+			const ret = { exam_mode_hosts: examModeHosts, message: `Exams in progress: ${examsInProgressIds.join(', ')}`, status: 'ok' }
+			cache.set('examModeHosts', ret, 5); // 5 second cache
+			return res.send(ret);
+		} catch (error) {
+			console.error('Error in /api/exam_mode_hosts route:', error);
+			return res.status(500).send({ error: 'Internal server error', status: 'error' });
+		}
 	});
 
 	app.get('/api/user/:login/.face', async (req, res) => {
-		const login = req.params.login;
-		if (!login) {
-			return res.status(400).send({ error: 'No login provided' });
-		}
-		if (!api) {
-			return res.status(503).send({ error: 'Intra API not initialized' });
-		}
-		if (cache.has(`user-image-${login}`)) {
-			const imageUrl = cache.get<string>(`user-image-${login}`);
-			if (imageUrl) {
-				return res.redirect(imageUrl);
+		try {
+			const login = validateUsernameParam(req);
+			if (!login) {
+				return res.status(400).send({ error: 'Invalid or missing login parameter' });
 			}
+			
+			if (!api) {
+				return res.status(503).send({ error: 'Intra API not initialized' });
+			}
+			
+			if (cache.has(`user-image-${login}`)) {
+				const imageUrl = cache.get<string>(`user-image-${login}`);
+				if (imageUrl) {
+					return res.redirect(imageUrl);
+				}
+			}
+			
+			const imageUrl = await fetchUserImage(api, login);
+			if (!imageUrl) {
+				return res.status(404).send({ error: 'User not found or no image set' });
+			}
+			
+			cache.set(`user-image-${login}`, imageUrl, cacheTTL); // Cache the image URL
+			return res.redirect(imageUrl);
+		} catch (error) {
+			console.error('Error in /api/user/:login/.face route:', error);
+			if (error instanceof ValidationError) {
+				return res.status(400).send({ error: error.message });
+			}
+			return res.status(500).send({ error: 'Internal server error' });
 		}
-		const imageUrl = await fetchUserImage(api, login);
-		if (!imageUrl) {
-			return res.status(404).send({ error: 'User not found or no image set' });
-		}
-		cache.set(`user-image-${login}`, imageUrl, cacheTTL); // Cache the image URL
-		return res.redirect(imageUrl);
 	});
 };
 
