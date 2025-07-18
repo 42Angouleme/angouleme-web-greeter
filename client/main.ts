@@ -111,6 +111,18 @@ async function initGreeter(): Promise<void> {
 	});
 }
 
+// Prevent zooming with Ctrl + and Ctrl - (and Ctrl + MouseWheel)
+document.addEventListener('keydown', (e) => {
+	if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '-' || e.key === '=')) {
+		e.preventDefault();
+	}
+});
+document.addEventListener('wheel', (e) => {
+	if (e.ctrlKey || e.metaKey) {
+		e.preventDefault();
+	}
+}, { passive: false });
+
 window.addEventListener("GreeterReady", () => {
 	initGreeter();
 });
