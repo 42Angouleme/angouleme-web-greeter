@@ -144,3 +144,4 @@ static/greeter.css
 
 # angouleme specific
 security.md
+push.sh

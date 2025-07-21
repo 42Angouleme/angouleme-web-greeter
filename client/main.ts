@@ -71,6 +71,7 @@ async function initGreeter(): Promise<void> {
 	window.idler = new Idler(window.ui.isLockScreen);
 	window.debugKeys = false;
 
+
 	// Add reboot keybind to reboot on ctrl+alt+del
 	// only when the lock screen is not shown
 	document.addEventListener('keydown', (e) => {
@@ -111,17 +112,58 @@ async function initGreeter(): Promise<void> {
 	});
 }
 
+/**
+ * Reset browser zoom to the correct scaling factor for the current display
+ */
+function resetBrowserZoom(): void {
+	try {
+		// Get the intended scaling factor from the UI (if available)
+		const intendedZoom = window.ui ? window.ui.scalingFactor : 1;
+		
+		// Apply zoom to both documentElement and body for consistency (matching UI.applyHiDpiScaling approach)
+		//@ts-ignore (zoom is a non-standard property)
+		document.documentElement.style.zoom = `${intendedZoom}`;
+		//@ts-ignore (zoom is a non-standard property)
+		document.body.style.zoom = `${intendedZoom}`;
+		
+		// Apply zoom to CSS variables for scaling of vw and vh units (matching UI.applyHiDpiScaling)
+		const root = document.documentElement;
+		root.style.setProperty('--zoom', intendedZoom.toString());
+		
+		console.log(`Zoom reset to intended scaling factor: ${intendedZoom}`);
+	} catch (error) {
+		console.error('Error resetting zoom:', error);
+	}
+}
+
+
+// Reset zoom on page load/reload - only after UI is initialized
+window.addEventListener('load', () => {
+	// Small delay to ensure UI is fully initialized
+	setTimeout(() => {
+		if (window.ui) {
+			resetBrowserZoom();
+		}
+	}, 100);
+});
+
 // Prevent zooming with Ctrl + and Ctrl - (and Ctrl + MouseWheel)
 document.addEventListener('keydown', (e) => {
-	if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '-' || e.key === '=')) {
+	// Prevent zoom shortcuts
+	if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '-' || e.key === '=' || e.key === '0')) {
 		e.preventDefault();
+		console.log('Zoom shortcut prevented:', e.key);
+		return false;
 	}
-});
+}, { capture: true });
+
 document.addEventListener('wheel', (e) => {
 	if (e.ctrlKey || e.metaKey) {
 		e.preventDefault();
+		console.log('Zoom wheel prevented');
+		return false;
 	}
-}, { passive: false });
+}, { passive: false, capture: true });
 
 window.addEventListener("GreeterReady", () => {
 	initGreeter();
