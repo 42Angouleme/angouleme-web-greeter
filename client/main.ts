@@ -93,6 +93,10 @@ async function initGreeter(): Promise<void> {
 					window.debugKeys = (window.debugKeys) ? false : true;
 					window.ui.setDebugInfo(`Debug keys: ${(window.debugKeys ? 'enabled' : 'disabled')}`);
 					return;
+				case 'z': // Ctrl + Alt + Z = force zoom recalibration
+					window.ui.setDebugInfo('Force zoom recalibration');
+					window.ui.forceZoomRecalibration();
+					break;
 			}
 		}
 		else { // Regular keybinds
@@ -117,20 +121,16 @@ async function initGreeter(): Promise<void> {
  */
 function resetBrowserZoom(): void {
 	try {
-		// Get the intended scaling factor from the UI (if available)
-		const intendedZoom = window.ui ? window.ui.scalingFactor : 1;
-		
-		// Apply zoom to both documentElement and body for consistency (matching UI.applyHiDpiScaling approach)
-		//@ts-ignore (zoom is a non-standard property)
-		document.documentElement.style.zoom = `${intendedZoom}`;
-		//@ts-ignore (zoom is a non-standard property)
-		document.body.style.zoom = `${intendedZoom}`;
-		
-		// Apply zoom to CSS variables for scaling of vw and vh units (matching UI.applyHiDpiScaling)
-		const root = document.documentElement;
-		root.style.setProperty('--zoom', intendedZoom.toString());
-		
-		console.log(`Zoom reset to intended scaling factor: ${intendedZoom}`);
+		if (window.ui) {
+			// Use the UI's reset method to ensure consistency
+			window.ui.resetZoom();
+		} else {
+			// Fallback: reset to default zoom if UI is not available
+			//@ts-ignore (zoom is a non-standard property)
+			document.body.style.zoom = "1";
+			document.documentElement.style.setProperty('--zoom', "1");
+			console.log('Zoom reset to default (1) - UI not available');
+		}
 	} catch (error) {
 		console.error('Error resetting zoom:', error);
 	}
@@ -145,6 +145,20 @@ window.addEventListener('load', () => {
 			resetBrowserZoom();
 		}
 	}, 100);
+	
+	// Additional backup resets to ensure zoom is properly applied
+	// This helps in cases where the initial reset might not work due to timing issues
+	setTimeout(() => {
+		if (window.ui) {
+			resetBrowserZoom();
+		}
+	}, 500);
+	
+	setTimeout(() => {
+		if (window.ui) {
+			resetBrowserZoom();
+		}
+	}, 1000);
 });
 
 // Prevent zooming with Ctrl + and Ctrl - (and Ctrl + MouseWheel)
