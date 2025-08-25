@@ -29,13 +29,15 @@ export class UI {
 		this._logo = document.getElementById('logo') as HTMLImageElement;
 		this._message = document.getElementById('message') as HTMLElement;
 
+		// Reset any existing zoom before applying our scaling
+		this.forceResetZoom();
 		// Set up DPI scaling
 		this.applyHiDpiScaling();
-
 		// Set up logo
-		if (data.logo.exists) {
-			this._logo.src = data.logo.path;
-		}
+		this._logo.src = data.logo.path;
+		this._logo.addEventListener('error', () => {
+			console.log(`Logo image not found at ${data.logo.path}`);
+		});
 
 		// Check for active sessions
 		const activeSession = lightdm.users.find((user: LightDMUser) => user.logged_in);
@@ -90,7 +92,17 @@ export class UI {
 		this.checkForExamMode();
 	}
 
+	/**
+	 * Force a complete zoom reset and re-application of scaling. Useful for debugging zoom issues.
+	 */
+	public forceZoomRecalibration(): void {
+		console.log('Force zoom recalibration requested');
+		this.forceResetZoom();
+		this.applyHiDpiScaling();
+	}
+
 	public setDebugInfo(info: string): void {
+		console.log("Debug info:", info);
 		this._infoBars.setDebugInfo(info);
 	}
 
@@ -196,21 +208,52 @@ export class UI {
 	 * Apply scaling for HiDPI screens
 	 */
 	public applyHiDpiScaling(): void {
+		let pixelRatio = 1; // Default scaling factor
+		
 		if (window.outerWidth > 2560 /* 1440p */ || window.devicePixelRatio != 1) {
 			// Set pixel ratio to 1.5 for HiDPI screens or to the specified DPI value
 			// 1.5 is the default here since there's a bug in nody-greeter that causes the value to be always 1 (when it should be 1.5 on iMacs)
-			const pixelRatio = window.devicePixelRatio > 1 ? window.devicePixelRatio : 1.7;
-
-			// Apply zoom to the whole page
-			//@ts-ignore (zoom is a non-standard property)
-			document.body.style.zoom = `${pixelRatio}`;
-
-			// Apply zoom to CSS variables for scaling of vw and vh units
-			const root = document.documentElement;
-			root.style.setProperty('--zoom', `${pixelRatio}`);
-
-			// Set the scaling factor for UI element calculations
-			this._scalingFactor = pixelRatio;
+			pixelRatio = window.devicePixelRatio > 1 ? window.devicePixelRatio : 1.7;
 		}
+
+		// Always reset/apply zoom to ensure consistent state
+		this.resetZoom(pixelRatio);
+	}
+
+	/**
+	 * Reset zoom to the specified scaling factor, clearing any user-applied zoom
+	 */
+	public resetZoom(scalingFactor: number = this._scalingFactor): void {
+		// Apply zoom to the whole page
+		//@ts-ignore (zoom is a non-standard property)
+		document.body.style.zoom = `${scalingFactor}`;
+
+		// Apply zoom to CSS variables for scaling of vw and vh units
+		const root = document.documentElement;
+		root.style.setProperty('--zoom', `${scalingFactor}`);
+
+		// Set the scaling factor for UI element calculations
+		this._scalingFactor = scalingFactor;
+
+		console.log(`Zoom reset to scaling factor: ${scalingFactor}`);
+	}
+
+	/**
+	 * Force reset zoom to 1.0 (100%), clearing any user-applied zoom before applying our scaling
+	 */
+	public forceResetZoom(): void {
+		// Reset both body and documentElement zoom to ensure we start from a clean state
+		//@ts-ignore (zoom is a non-standard property)
+		document.body.style.zoom = "1";
+		//@ts-ignore (zoom is a non-standard property)
+		document.documentElement.style.zoom = "1";
+		
+		// Reset CSS variable
+		document.documentElement.style.setProperty('--zoom', "1");
+		
+		// Reset internal scaling factor
+		this._scalingFactor = 1;
+		
+		console.log('Zoom force reset to 1.0 (clearing any user zoom)');
 	}
 }
